@@ -111,7 +111,7 @@ class RoboclawNode:
 
         self.cmd_vel_sub = rospy.Subscriber('cmd_vel', Twist, self.cb_twist)
         self.odom_pub = rospy.Publisher('odom', Odometry, queue_size=5)
-        self.joint_pub = rospy.Publisher('odom', JointState, queue_size=5)
+        self.joint_pub = rospy.Publisher('joint_states', JointState, queue_size=5)
         self.state_pub = rospy.Publisher('roboclaw_state', RoboClawState, queue_size=5)
         self.tf_publish = tf.TransformBroadcaster()
 
