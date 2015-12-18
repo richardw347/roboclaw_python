@@ -194,7 +194,6 @@ class RoboclawNode:
         self.joint_pub.publish(self.js)
 
     def update_speeds(self, left_speed, right_speed):
-        print str(left_speed) + " " + str(right_speed)
         if self.robot_dir:
             roboclaw.SpeedAccelM1M2(ADDRESS, self.max_accel_qpps, long(left_speed), long(right_speed))
         else:
