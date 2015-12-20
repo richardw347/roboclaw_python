@@ -1036,3 +1036,7 @@ def Open(comport, rate):
 	port = serial.Serial(comport, baudrate=rate, timeout=0.1, interCharTimeout=0.01)
 	return
 
+def Close():
+	global port
+	port = None
+	return

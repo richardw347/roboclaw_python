@@ -1,0 +1,6 @@
+string[] error_states
+float64 battery_voltage
+float64 left_motor_current
+float64 right_motor_current
+float64 linear_velocity
+float64 angular_velocity

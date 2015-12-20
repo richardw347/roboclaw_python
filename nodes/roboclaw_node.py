@@ -29,18 +29,34 @@
 
 # Authors: Richard Williams
 
+
+ERROR_MASKS = ['0x0000', '0x0001', '0x0002', '0x0004', '0x0008', '0x0010', '0x0020', '0x0040', '0x0080',
+               '0x0100', '0x0200', '0x0400', '0x0800', '0x1000', '0x2000', '0x4000', '0x8000']
+ERROR_STRINGS = ['Normal', 'M1 OverCurrent', 'M2 OverCurrent', 'E-Stop', 'Temperature1 Error', 'Temperature2 Error',
+                 'Main Battery High Error', 'Logic Battery High Error', 'Logic Battery Low Error',
+                 'M1 Driver Fault', 'M2 Driver Fault', 'Main Battery High', 'Main Battery Low',
+                 'Temperature1 Warning', 'Temperature2 Warning', 'M1 Home', 'M2 Home']
+
 import rospy
 import tf
 from roboclaw_python import roboclaw
 from geometry_msgs.msg import Quaternion, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState
-from roboclaw_driver.msg import RoboClawState
+from roboclaw_python.msg import RoboClawState
 from math import sin, cos
+import termios
+from serial.serialutil import SerialException
+from enum import Enum
 
 ADDRESS = 0x80
 DIAGNOSTICS_DELAY = 2.0
 TWIST_CMD_TIMEOUT = 3.0
+MAX_ERRORS = 5
+
+class ConnectionState(Enum):
+    DISCONNECTED = 0
+    CONNECTED = 1
 
 class RoboclawNode:
     def __init__(self):
@@ -61,6 +77,8 @@ class RoboclawNode:
         self.x = rospy.get_param('~last_odom_x', 0.0)
         self.y = rospy.get_param('~last_odom_y', 0.0)
         self.theta = rospy.get_param('~last_odom_theta', 0.0)
+        self.connection_state = ConnectionState.DISCONNECTED
+        self.error_count = 0
 
         rospy.loginfo('Starting roboclaw node with params:')
         rospy.loginfo('Port:\t%s' %self.port)
@@ -78,14 +96,8 @@ class RoboclawNode:
         rospy.loginfo('Y:\t%f' %self.y)
         rospy.loginfo('Theta:\t%f' %self.theta)
 
-        roboclaw.Open("/dev/roboclaw", self.baud_rate)
-        roboclaw.SetM1VelocityPID(ADDRESS, self.KP, self.KI, self.KD, self.QPPS)
-        roboclaw.SetM2VelocityPID(ADDRESS, self.KP, self.KI, self.KD, self.QPPS)
-        version = roboclaw.ReadVersion(ADDRESS)
-        if version[0]==False:
-            rospy.loginfo("GETVERSION Failed")
-        else:
-            rospy.loginfo(repr(version[1]))
+        if not self.reconnect():
+            rospy.signal_shutdown("failed to connect to Roboclaw")
 
         self.max_accel_qpps = long(self.max_accel * self.ticks_per_m)
         self.last_motor = rospy.Time.now()
@@ -124,6 +136,8 @@ class RoboclawNode:
         self.js.effort.append(0.0)
         self.js.effort.append(0.0)
 
+
+
     def update_odom(self):
         now = rospy.Time.now()
         dt = now.to_sec() - self.last_odom.to_sec()
@@ -138,12 +152,12 @@ class RoboclawNode:
         enc2 = roboclaw.ReadEncM2(ADDRESS)
 
         if(enc1[0]==1):
-            encoder_left = -self.left_dir * enc1[1]
+            encoder_left = self.left_dir * enc1[1]
         else:
             rospy.logerr("failed to read encoder 1")
 
         if(enc2[0]==1):
-            encoder_right = -self.right_dir * enc2[1]
+            encoder_right = self.right_dir * enc2[1]
         else:
             rospy.logerr("failed to read encoder 2")
 
@@ -178,7 +192,7 @@ class RoboclawNode:
     def publish_tf(self):
         now = rospy.Time.now()
         self.tf_publish.sendTransform((self.x, self.y, 0), tf.transformations.quaternion_from_euler(0, 0, self.theta),
-                                      rospy.Time.now(), 'odom', self.base_frame_id)
+                                      rospy.Time.now(),  self.base_frame_id, 'odom')
 
         self.odometry.header.stamp = now
         self.odometry.pose.pose.position.x = self.x
@@ -208,6 +222,12 @@ class RoboclawNode:
         self.state.right_motor_current = currents[2] / 100.0
         self.state.linear_velocity = self.vx
         self.state.angular_velocity = self.vth
+        error = roboclaw.ReadError(ADDRESS)
+        if error[0]:
+            self.state.error_states = []
+            for i, mask in enumerate(ERROR_MASKS):
+                if (error[1] & int(mask, 0)) == int(mask, 0):
+                    self.state.error_states.append(ERROR_STRINGS[i])
         self.state_pub.publish(self.state)
 
     def cb_twist(self, msg):
@@ -220,18 +240,58 @@ class RoboclawNode:
         self.target_left_qpps = left * self.ticks_per_m * self.left_dir
         self.target_right_qpps = right * self.ticks_per_m * self.right_dir
 
+    def reconnect(self):
+        try:
+            roboclaw.Open(self.port, self.baud_rate)
+            roboclaw.SetM1VelocityPID(ADDRESS, self.KP, self.KI, self.KD, self.QPPS)
+            roboclaw.SetM2VelocityPID(ADDRESS, self.KP, self.KI, self.KD, self.QPPS)
+            version = roboclaw.ReadVersion(ADDRESS)
+            if version[0]==False:
+                rospy.loginfo("GETVERSION Failed")
+            else:
+                rospy.loginfo(repr(version[1]))
+            self.connection_state = ConnectionState.CONNECTED
+            self.error_count = 0
+            return True
+        except termios.error as e:
+            rospy.logwarn(str(e.message))
+            return False
+        except OSError as e:
+            rospy.logwarn(str(e.message))
+            return False
+        except SerialException as e:
+            rospy.logwarn(str(e.message))
+            return False
+
+    def handle_error(self, e):
+        rospy.logwarn("Error communicating with Roboclaw: " + str(e.message))
+        self.error_count += 1
+        if self.error_count > MAX_ERRORS:
+            self.connection_state = ConnectionState.DISCONNECTED
+
     def spin(self):
         rt = rospy.Rate(self.rate)
         while not rospy.is_shutdown():
-            now = rospy.Time.now()
-            if now > self.last_state + rospy.Duration(DIAGNOSTICS_DELAY):
-                self.update_state()
-            if now > self.last_motor + rospy.Duration(TWIST_CMD_TIMEOUT):
-                self.target_right_qpps = self.target_left_qpps = 0.0
-            self.update_odom()
-            self.publish_tf()
-            self.update_speeds(self.target_left_qpps, self.target_right_qpps)
-            rt.sleep()
+            if self.connection_state == ConnectionState.CONNECTED:
+                try:
+                    now = rospy.Time.now()
+                    if now > self.last_state + rospy.Duration(DIAGNOSTICS_DELAY):
+                        self.update_state()
+                    if now > self.last_motor + rospy.Duration(TWIST_CMD_TIMEOUT):
+                        self.target_right_qpps = self.target_left_qpps = 0.0
+                    self.update_odom()
+                    self.publish_tf()
+                    self.update_speeds(self.target_left_qpps, self.target_right_qpps)
+                    rt.sleep()
+                except termios.error as e:
+                    self.handle_error(e)
+                except OSError as e:
+                    self.handle_error(e)
+                except SerialException as e:
+                    self.handle_error(e)
+            else:
+                self.reconnect()
+                rospy.sleep(1.0)
         rospy.set_param('last_odom_x', self.x)
         rospy.set_param('last_odom_y', self.y)
         rospy.set_param('last_odom_theta', self.theta)

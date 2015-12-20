@@ -1,5 +1,5 @@
 <launch>
-   <node name="roboclaw_python" pkg="roboclaw_python" type="roboclaw_node.py" output="screen" >
+   <node name="roboclaw_python" pkg="roboclaw_python" type="roboclaw_node.py" output="screen" respawn="true" >
 		<param name="port" value="/dev/roboclaw" />
 		<param name="baud_rate" value="1000000" />
 		<param name="update_rate" value="50" />
