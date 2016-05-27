@@ -129,8 +129,8 @@ class RoboclawNode:
 
         self.js = JointState()
         self.js.header.frame_id = 'base_link'
-        self.js.name.append('base_l_wheel_joint')
-        self.js.name.append('base_r_wheel_joint')
+        self.js.name.append('l_wheel_joint')
+        self.js.name.append('r_wheel_joint')
         self.js.position.append(0.0)
         self.js.position.append(0.0)
         self.js.effort.append(0.0)
