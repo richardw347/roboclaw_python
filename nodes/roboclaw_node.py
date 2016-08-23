@@ -142,7 +142,7 @@ class RoboclawNode:
         now = rospy.Time.now()
         dt = now.to_sec() - self.last_odom.to_sec()
 
-        if dt > 10.0:
+        if dt > 10.0 or dt == 0.0:
             self.last_odom = now
             return
 
