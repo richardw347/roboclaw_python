@@ -1,5 +1,19 @@
 #!/usr/bin/env python
 
+from __future__ import print_function
+from __future__ import division
+import rospy
+import tf
+from roboclaw_python.roboclaw import Roboclaw
+from geometry_msgs.msg import Quaternion, Twist
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import JointState
+from roboclaw_python.msg import RoboClawState
+from math import sin, cos
+import termios
+from serial.serialutil import SerialException
+from enum import Enum
+
 # Copyright (c) 2014 Richard Williams
 # All rights reserved.
 #
@@ -37,43 +51,34 @@ ERROR_STRINGS = ['Normal', 'M1 OverCurrent', 'M2 OverCurrent', 'E-Stop', 'Temper
                  'M1 Driver Fault', 'M2 Driver Fault', 'Main Battery High', 'Main Battery Low',
                  'Temperature1 Warning', 'Temperature2 Warning', 'M1 Home', 'M2 Home']
 
-import rospy
-import tf
-from roboclaw_python import roboclaw
-from geometry_msgs.msg import Quaternion, Twist
-from nav_msgs.msg import Odometry
-from sensor_msgs.msg import JointState
-from roboclaw_python.msg import RoboClawState
-from math import sin, cos
-import termios
-from serial.serialutil import SerialException
-from enum import Enum
-
 ADDRESS = 0x80
 DIAGNOSTICS_DELAY = 2.0
 TWIST_CMD_TIMEOUT = 3.0
 MAX_ERRORS = 5
 
+
 class ConnectionState(Enum):
     DISCONNECTED = 0
     CONNECTED = 1
 
+
 class RoboclawNode:
     def __init__(self):
+        self.roboclaw = None
         self.port = rospy.get_param('~port', '/dev/roboclaw')
         self.base_frame_id = rospy.get_param('~base_frame_id', 'base_footprint')
         self.baud_rate = rospy.get_param('~baud_rate', 1000000)
         self.rate = rospy.get_param('~update_rate', 50)
-        self.base_width = rospy.get_param('~base_width', 0.2)
-        self.ticks_per_m = rospy.get_param('~ticks_per_metre', 2000)
+        self.base_width = rospy.get_param('~base_width', 0.35)
+        self.ticks_per_m = rospy.get_param('~ticks_per_metre', 19660.16)
         self.robot_dir = rospy.get_param('~robot_direction', False)
         self.max_accel = rospy.get_param('~max_acceleration', 1.0)
-        self.KP = rospy.get_param('~KP', 0.1)
-        self.KI = rospy.get_param('~KI', 0.5)
+        self.KP = rospy.get_param('~KP', 1.0)
+        self.KI = rospy.get_param('~KI', 0.01)
         self.KD = rospy.get_param('~KD', 0.25)
-        self.QPPS = rospy.get_param('~QPPS', 11500)
-        self.left_dir = rospy.get_param('~left_motor_direction', True)
-        self.right_dir = rospy.get_param('~right_motor_direction', True)
+        self.QPPS = rospy.get_param('~QPPS', 12000)
+        self.left_dir = rospy.get_param('~left_motor_direction', 1)
+        self.right_dir = rospy.get_param('~right_motor_direction', 1)
         self.x = rospy.get_param('~last_odom_x', 0.0)
         self.y = rospy.get_param('~last_odom_y', 0.0)
         self.theta = rospy.get_param('~last_odom_theta', 0.0)
@@ -81,25 +86,25 @@ class RoboclawNode:
         self.error_count = 0
 
         rospy.loginfo('Starting roboclaw node with params:')
-        rospy.loginfo('Port:\t%s' %self.port)
-        rospy.loginfo('Baud rate:\t%d' %self.baud_rate)
-        rospy.loginfo('Base Width:\t%f' %self.base_width)
-        rospy.loginfo('Ticks Per Metre:\t%f' %self.ticks_per_m)
-        rospy.loginfo('KP:\t%f' %self.KP)
-        rospy.loginfo('KI:\t%f' %self.KI)
-        rospy.loginfo('KD:\t%f' %self.KD)
-        rospy.loginfo('QPPS:\t%f' %self.QPPS)
-        rospy.loginfo('Robot Dir:\t%d' %self.robot_dir)
-        rospy.loginfo('Left Motor Direction:\t%d' %self.left_dir)
-        rospy.loginfo('Right Motor Direction:\t%d' %self.right_dir)
-        rospy.loginfo('X:\t%f' %self.x)
-        rospy.loginfo('Y:\t%f' %self.y)
-        rospy.loginfo('Theta:\t%f' %self.theta)
+        rospy.loginfo('Port:\t%s' % self.port)
+        rospy.loginfo('Baud rate:\t%d' % self.baud_rate)
+        rospy.loginfo('Base Width:\t%f' % self.base_width)
+        rospy.loginfo('Ticks Per Metre:\t%f' % self.ticks_per_m)
+        rospy.loginfo('KP:\t%f' % self.KP)
+        rospy.loginfo('KI:\t%f' % self.KI)
+        rospy.loginfo('KD:\t%f' % self.KD)
+        rospy.loginfo('QPPS:\t%f' % self.QPPS)
+        rospy.loginfo('Robot Dir:\t%d' % self.robot_dir)
+        rospy.loginfo('Left Motor Direction:\t%d' % self.left_dir)
+        rospy.loginfo('Right Motor Direction:\t%d' % self.right_dir)
+        rospy.loginfo('X:\t%f' % self.x)
+        rospy.loginfo('Y:\t%f' % self.y)
+        rospy.loginfo('Theta:\t%f' % self.theta)
 
         if not self.reconnect():
             rospy.signal_shutdown("failed to connect to Roboclaw")
 
-        self.max_accel_qpps = long(self.max_accel * self.ticks_per_m)
+        self.max_accel_qpps = int(self.max_accel * self.ticks_per_m)
         self.last_motor = rospy.Time.now()
         self.last_odom = rospy.Time.now()
         self.last_state = rospy.Time.now()
@@ -136,8 +141,6 @@ class RoboclawNode:
         self.js.effort.append(0.0)
         self.js.effort.append(0.0)
 
-
-
     def update_odom(self):
         now = rospy.Time.now()
         dt = now.to_sec() - self.last_odom.to_sec()
@@ -148,18 +151,23 @@ class RoboclawNode:
 
         self.last_odom = now
 
-        enc1 = roboclaw.ReadEncM1(ADDRESS)
-        enc2 = roboclaw.ReadEncM2(ADDRESS)
+        enc1 = self.roboclaw.ReadEncM1(ADDRESS)
+        enc2 = self.roboclaw.ReadEncM2(ADDRESS)
 
-        if(enc1[0]==1):
+        encoder_left = 0
+        encoder_right = 0
+
+        if enc1[0] == 1:
             encoder_left = self.left_dir * enc1[1]
         else:
             rospy.logerr("failed to read encoder 1")
+            return
 
-        if(enc2[0]==1):
+        if enc2[0] == 1:
             encoder_right = self.right_dir * enc2[1]
         else:
             rospy.logerr("failed to read encoder 2")
+            return
 
         dist_left = 0.0
         dist_right = 0.0
@@ -192,7 +200,7 @@ class RoboclawNode:
     def publish_tf(self):
         now = rospy.Time.now()
         self.tf_publish.sendTransform((self.x, self.y, 0), tf.transformations.quaternion_from_euler(0, 0, self.theta),
-                                      rospy.Time.now(),  self.base_frame_id, 'odom')
+                                      rospy.Time.now(), self.base_frame_id, 'odom')
 
         self.odometry.header.stamp = now
         self.odometry.pose.pose.position.x = self.x
@@ -209,20 +217,20 @@ class RoboclawNode:
 
     def update_speeds(self, left_speed, right_speed):
         if self.robot_dir:
-            roboclaw.SpeedAccelM1M2(ADDRESS, self.max_accel_qpps, long(left_speed), long(right_speed))
+            self.roboclaw.SpeedAccelM1M2(ADDRESS, self.max_accel_qpps, int(left_speed), int(right_speed))
         else:
-            roboclaw.SpeedAccelM1M2(ADDRESS, self.max_accel_qpps, long(right_speed), long(left_speed))
+            self.roboclaw.SpeedAccelM1M2(ADDRESS, self.max_accel_qpps, int(right_speed), int(left_speed))
 
     def update_state(self):
         self.last_state = rospy.Time.now()
-        battery = roboclaw.ReadMainBatteryVoltage(ADDRESS)[1]
+        battery = self.roboclaw.ReadMainBatteryVoltage(ADDRESS)[1]
         self.state.battery_voltage = battery / 10.0
-        currents = roboclaw.ReadCurrents(ADDRESS)
+        currents = self.roboclaw.ReadCurrents(ADDRESS)
         self.state.left_motor_current = currents[1] / 100.0
         self.state.right_motor_current = currents[2] / 100.0
         self.state.linear_velocity = self.vx
         self.state.angular_velocity = self.vth
-        error = roboclaw.ReadError(ADDRESS)
+        error = self.roboclaw.ReadError(ADDRESS)
         if error[0]:
             self.state.error_states = []
             for i, mask in enumerate(ERROR_MASKS):
@@ -231,7 +239,7 @@ class RoboclawNode:
         self.state_pub.publish(self.state)
 
     def cb_twist(self, msg):
-        assert(isinstance(msg, Twist))
+        assert (isinstance(msg, Twist))
         self.last_motor = rospy.Time.now()
         lin = msg.linear.x
         ang = msg.angular.z
@@ -242,11 +250,12 @@ class RoboclawNode:
 
     def reconnect(self):
         try:
-            roboclaw.Open(self.port, self.baud_rate)
-            roboclaw.SetM1VelocityPID(ADDRESS, self.KP, self.KI, self.KD, self.QPPS)
-            roboclaw.SetM2VelocityPID(ADDRESS, self.KP, self.KI, self.KD, self.QPPS)
-            version = roboclaw.ReadVersion(ADDRESS)
-            if version[0]==False:
+            self.roboclaw = Roboclaw(self.port, self.baud_rate)
+            self.roboclaw.Open()
+            self.roboclaw.SetM1VelocityPID(ADDRESS, self.KP, self.KI, self.KD, self.QPPS)
+            self.roboclaw.SetM2VelocityPID(ADDRESS, self.KP, self.KI, self.KD, self.QPPS)
+            version = self.roboclaw.ReadVersion(ADDRESS)
+            if not version[0]:
                 rospy.loginfo("GETVERSION Failed")
             else:
                 rospy.loginfo(repr(version[1]))
