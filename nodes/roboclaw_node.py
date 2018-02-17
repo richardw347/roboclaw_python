@@ -204,7 +204,7 @@ class RoboclawNode:
 
         self.odometry.header.stamp = now
         self.odometry.pose.pose.position.x = self.x
-        self.odometry.pose.pose.position.x = self.y
+        self.odometry.pose.pose.position.y = self.y
         self.odometry.pose.pose.orientation.x = self.odometry.pose.pose.orientation.y = 0.0
         self.odometry.pose.pose.orientation.z = sin(self.theta / 2.0)
         self.odometry.pose.pose.orientation.w = cos(self.theta / 2.0)
